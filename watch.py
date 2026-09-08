@@ -170,18 +170,37 @@ def redact(text: str) -> str:
     return re.sub(r"\?[^\s\"']*", "?<redacted>", text)
 
 
+def describe_http_error(exc: urllib.error.HTTPError) -> str:
+    """エラーレスポンスの本文まで含めて返す。原因の切り分けに要る。
+
+    楽天/Yahoo は 400 の本文に error / error_description を入れてくる。
+    本文にリクエスト URL は入らないが、念のため redact() を通す。
+    """
+    try:
+        body = exc.read().decode("utf-8", "replace").strip().replace("\n", " ")
+    except Exception:  # noqa: BLE001 - 本文が読めなくても状態コードは返す
+        body = ""
+    detail = f" {body[:300]}" if body else ""
+    return redact(f"HTTP {exc.code}{detail}")
+
+
 def http_get_json(url: str, headers: dict | None = None) -> dict:
-    last: Exception | None = None
+    last_error = "unknown"
     for attempt in range(RETRY + 1):
         try:
             req = urllib.request.Request(url, headers=headers or {})
             with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as res:
                 return json.loads(res.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001 - リトライして最後に投げ直す
-            last = exc
-            if attempt < RETRY:
-                time.sleep(2 ** (attempt + 1))  # 2s -> 4s
-    raise RuntimeError(redact(f"{type(last).__name__}: {last}"))
+        except urllib.error.HTTPError as exc:
+            last_error = describe_http_error(exc)
+            # 4xx はリトライしても同じ (429 のレート超過だけは待てば通る)
+            if exc.code != 429 and 400 <= exc.code < 500:
+                break
+        except Exception as exc:  # noqa: BLE001 - 通信エラーはリトライ対象
+            last_error = redact(f"{type(exc).__name__}: {exc}")
+        if attempt < RETRY:
+            time.sleep(2 ** (attempt + 1))  # 2s -> 4s
+    raise RuntimeError(last_error)
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +749,17 @@ def selftest() -> int:
         "HTTP Error 429: https://app.rakuten.co.jp/x?applicationId=SECRET123&keyword=a")
     if "SECRET123" in leaked:
         failures.append(f"API キーが漏れている: {leaked}")
+
+    # HTTP エラーは本文まで拾う (原因切り分けのため)
+    import io
+    err = urllib.error.HTTPError(
+        "https://app.rakuten.co.jp/x?applicationId=SECRET123", 400, "Bad Request", {},
+        io.BytesIO(b'{"error":"wrong_parameter","error_description":"sort is invalid"}'))
+    described = describe_http_error(err)
+    if "wrong_parameter" not in described or "400" not in described:
+        failures.append(f"HTTP エラー本文が落ちている: {described}")
+    if "SECRET123" in described:
+        failures.append(f"HTTP エラー本文経由で漏れている: {described}")
 
     # ヘルスチェック
     now = datetime.now(JST)
