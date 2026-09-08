@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ulike AirPro S 価格推移</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f8; --card: #fff; --fg: #1a1a1a; --muted: #6b7280;
+    --line: #e5e7eb; --rakuten: #bf0000; --yahoo: #5b21b6; --atl: #16a34a; --list: #9ca3af;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d; --card: #1f2229; --fg: #e8e8ea; --muted: #9aa0aa;
+      --line: #33373f; --rakuten: #ff7a7a; --yahoo: #a78bfa; --atl: #4ade80; --list: #6b7280;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--fg);
+         font-family: -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+           gap: 10px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 12px 14px; }
+  .card .k { font-size: 12px; color: var(--muted); }
+  .card .v { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  .card .n { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+           padding: 14px; }
+  .range { display: flex; gap: 6px; margin-bottom: 10px; }
+  .range button { border: 1px solid var(--line); background: transparent; color: var(--fg);
+                  padding: 5px 12px; border-radius: 999px; font-size: 13px; cursor: pointer; }
+  .range button[aria-pressed="true"] { background: var(--fg); color: var(--card);
+                                       border-color: var(--fg); }
+  .chart { position: relative; height: 380px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .msg { color: var(--muted); font-size: 14px; padding: 24px 0; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Ulike AirPro S 価格推移</h1>
+  <p class="sub">楽天市場 / Yahoo!ショッピング の実質価格 (商品名のクーポン価格を反映)。
+     ポイント還元は含みません。</p>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="panel">
+    <div class="range">
+      <button data-days="30">30日</button>
+      <button data-days="90">90日</button>
+      <button data-days="0" aria-pressed="true">全期間</button>
+    </div>
+    <div class="chart"><canvas id="chart"></canvas></div>
+    <div class="msg" id="msg" hidden></div>
+  </div>
+
+  <table id="recent" hidden>
+    <thead><tr><th>日時 (JST)</th><th>サイト</th><th class="num">実質</th>
+    <th class="num">API 価格</th><th>ストア</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const LIST_PRICE = 49800;
+const SITES = { rakuten: { label: "楽天", color: "--rakuten" },
+                yahoo:   { label: "Yahoo", color: "--yahoo" } };
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const yen = (n) => n.toLocaleString("ja-JP") + "円";
+const fmt = (iso) => iso.slice(0, 16).replace("T", " ");
+
+let rows = [];
+let chart = null;
+
+async function load() {
+  let text = "";
+  try {
+    const res = await fetch("history.jsonl", { cache: "no-store" });
+    if (!res.ok) throw new Error(res.status);
+    text = await res.text();
+  } catch (e) {
+    return fail("history.jsonl を読み込めませんでした。まだ 1 回も実行されていない可能性があります。");
+  }
+  rows = text.split("\n").filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter((r) => r && r.ts && r.price).sort((a, b) => a.ts.localeCompare(b.ts));
+
+  if (!rows.length) return fail("まだ価格の記録がありません。");
+  renderCards();
+  renderTable();
+  draw(0);
+}
+
+function fail(message) {
+  const msg = document.getElementById("msg");
+  msg.textContent = message;
+  msg.hidden = false;
+  document.getElementById("chart").hidden = true;
+}
+
+function renderCards() {
+  const atl = rows.reduce((a, b) => (b.price < a.price ? b : a));
+  const latestBySite = {};
+  for (const r of rows) latestBySite[r.site] = r;
+  const latest = Object.values(latestBySite).reduce((a, b) => (b.price < a.price ? b : a));
+
+  const cards = [
+    { k: "現在の最安", v: yen(latest.price),
+      n: `${SITES[latest.site]?.label ?? latest.site} / ${fmt(latest.ts)}` },
+    { k: "歴代最安 (ATL)", v: yen(atl.price),
+      n: `${SITES[atl.site]?.label ?? atl.site} / ${fmt(atl.ts)}` },
+    { k: "定価比", v: "-" + yen(LIST_PRICE - latest.price),
+      n: `定価 ${yen(LIST_PRICE)} の ${Math.round((1 - latest.price / LIST_PRICE) * 100)}% OFF` },
+    { k: "記録数", v: String(rows.length),
+      n: `${fmt(rows[0].ts)} 〜` },
+  ];
+  document.getElementById("cards").innerHTML = cards.map((c) =>
+    `<div class="card"><div class="k">${c.k}</div><div class="v">${c.v}</div>
+     <div class="n">${c.n}</div></div>`).join("");
+}
+
+function renderTable() {
+  const table = document.getElementById("recent");
+  table.querySelector("tbody").innerHTML = rows.slice(-20).reverse().map((r) => `
+    <tr><td>${fmt(r.ts)}</td><td>${SITES[r.site]?.label ?? r.site}</td>
+    <td class="num">${r.url ? `<a href="${r.url}">${yen(r.price)}</a>` : yen(r.price)}</td>
+    <td class="num">${yen(r.list)}</td><td>${r.shop ?? ""}</td></tr>`).join("");
+  table.hidden = false;
+}
+
+function draw(days) {
+  const cutoff = days ? Date.now() - days * 86400000 : 0;
+  const shown = rows.filter((r) => !cutoff || Date.parse(r.ts) >= cutoff);
+  if (!shown.length) return fail("この期間には記録がありません。");
+  document.getElementById("msg").hidden = true;
+  document.getElementById("chart").hidden = false;
+
+  const labels = [...new Set(shown.map((r) => r.ts))].sort();
+  const index = new Map(labels.map((ts, i) => [ts, i]));
+  const atl = Math.min(...rows.map((r) => r.price));   // ATL は全期間から算出
+
+  const series = Object.entries(SITES).map(([site, meta]) => {
+    const data = new Array(labels.length).fill(null);
+    for (const r of shown) if (r.site === site) data[index.get(r.ts)] = r.price;
+    return {
+      label: meta.label, data, borderColor: css(meta.color),
+      backgroundColor: css(meta.color), tension: 0.2, spanGaps: true,
+      pointRadius: 2, borderWidth: 2,
+    };
+  });
+
+  const flat = (label, value, color, dash) => ({
+    label, data: new Array(labels.length).fill(value), borderColor: css(color),
+    borderDash: dash, borderWidth: 1.5, pointRadius: 0, fill: false,
+  });
+
+  const datasets = [
+    ...series,
+    flat(`ATL ${yen(atl)}`, atl, "--atl", [6, 4]),
+    flat(`定価 ${yen(LIST_PRICE)}`, LIST_PRICE, "--list", [2, 4]),
+  ];
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("chart"), {
+    type: "line",
+    data: { labels: labels.map(fmt), datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        y: { ticks: { color: css("--muted"), callback: (v) => v.toLocaleString("ja-JP") },
+             grid: { color: css("--line") } },
+        x: { ticks: { color: css("--muted"), maxTicksLimit: 10, autoSkip: true },
+             grid: { display: false } },
+      },
+      plugins: {
+        legend: { labels: { color: css("--fg"), boxWidth: 12 } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${yen(c.parsed.y)}` } },
+      },
+    },
+  });
+}
+
+document.querySelectorAll(".range button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".range button")
+      .forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+    draw(Number(btn.dataset.days));
+  });
+});
+
+load();
+</script>
+</body>
+</html>

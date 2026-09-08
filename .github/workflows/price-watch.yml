@@ -1,0 +1,71 @@
+name: price-watch
+
+on:
+  schedule:
+    # UTC 00:00 / 04:00 / 12:00 = JST 09:00 / 13:00 / 21:00
+    # GitHub の cron は数分〜数十分遅れることがある (仕様)
+    - cron: "0 0,4,12 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "メールを送らず現在価格だけ表示する"
+        type: boolean
+        default: false
+
+# state.json / history.jsonl のコミットが同時実行でぶつからないようにする
+concurrency:
+  group: price-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Self test
+        run: |
+          python watch.py --selftest
+          python test_e2e.py
+
+      - name: Watch prices
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          YAHOO_CLIENT_ID: ${{ secrets.YAHOO_CLIENT_ID }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python watch.py --dry-run
+          else
+            python watch.py
+          fi
+
+      - name: Commit state and history
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # API 全滅の回は state.json 自体が無いことがあるので存在チェックする
+          for f in state.json docs/history.jsonl; do
+            [ -f "$f" ] && git add "$f"
+          done
+          if git diff --staged --quiet; then
+            echo "変更なし"
+            exit 0
+          fi
+          git commit -m "chore: 価格記録 $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push && exit 0
+            sleep 5
+          done
+          echo "push に失敗しました" >&2
+          exit 1
