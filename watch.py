@@ -75,6 +75,7 @@ COUPON_PATTERNS = [
 ]
 
 SITE_LABEL = {"rakuten": "楽天", "yahoo": "Yahoo"}
+USER_AGENT = "price-watch/1.0 (+https://github.com/narodri/price-watch)"
 
 
 # ---------------------------------------------------------------------------
@@ -185,10 +186,13 @@ def describe_http_error(exc: urllib.error.HTTPError) -> str:
 
 
 def http_get_json(url: str, headers: dict | None = None) -> dict:
+    # urllib の既定 UA (Python-urllib/x.y) を弾く API があるので必ず名乗る
+    sent = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    sent.update(headers or {})
     last_error = "unknown"
     for attempt in range(RETRY + 1):
         try:
-            req = urllib.request.Request(url, headers=headers or {})
+            req = urllib.request.Request(url, headers=sent)
             with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as res:
                 return json.loads(res.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
