@@ -560,8 +560,9 @@ def log_run(target: dict, now: datetime, results: list[SiteResult],
 
 
 def run(args: argparse.Namespace) -> int:
-    rakuten_id = os.environ.get("RAKUTEN_APP_ID")
-    yahoo_id = os.environ.get("YAHOO_CLIENT_ID")
+    # 貼り付け時に紛れ込む改行や前後の空白で認証が落ちるのを防ぐ
+    rakuten_id = (os.environ.get("RAKUTEN_APP_ID") or "").strip()
+    yahoo_id = (os.environ.get("YAHOO_CLIENT_ID") or "").strip()
     if not rakuten_id and not yahoo_id:
         print("RAKUTEN_APP_ID か YAHOO_CLIENT_ID のどちらかが必要です", file=sys.stderr)
         return 1
