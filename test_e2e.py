@@ -1,7 +1,7 @@
 """watch.py の実行フローをネットワークなしで通す E2E テスト。
 
-API レスポンスを差し替えて、ATL 更新 / コールドスタート / 誤検出フィルタ /
-API 障害 / --dry-run / ヘルス警告 の分岐を実際に走らせる。
+API レスポンスを差し替えて、閾値通知 / 再通知抑制 / コールドスタート /
+誤検出フィルタ / API 障害 / --dry-run / ヘルス警告 の分岐を実際に走らせる。
 
     python test_e2e.py
 """
@@ -97,25 +97,42 @@ check("1/ATL", state()["ulike-airpro-s"]["atl"]["price"], 48000)
 check("1/history 行数", len(history()), 2)
 check("1/history サイト", sorted(r["site"] for r in history()), ["rakuten", "yahoo"])
 
-print("== 2. 微更新 (300円) → ATL は更新、メールは抑制 ==")
+print("== 2. 閾値より上の値下げ → ATL は更新、メールなし ==")
 stub(rakuten_payload(NAME_COUPON.format("47,700"), 49800), yahoo_payload(NAME_LIST, 48000))
 code, sent = run()
 check("2/メール数", len(sent), 0)
 check("2/ATL", state()["ulike-airpro-s"]["atl"]["price"], 47700)
 
-print("== 3. 大幅更新 → 通知 ==")
+print("== 3. 閾値 (27,000円) 以下 → 通知 ==")
 stub(rakuten_payload(NAME_COUPON.format("26,892"), 49800), yahoo_payload(NAME_LIST, 48000))
 code, sent = run()
 check("3/メール数", len(sent), 1)
-check("3/件名", sent[0], "【最安更新】Ulike AirPro S 26,892円 (楽天) ▼20,808円")
+check("3/件名", sent[0],
+      "【26,892円】Ulike AirPro S が 27,000円以下になりました (楽天)")
 check("3/ATL", state()["ulike-airpro-s"]["atl"]["price"], 26892)
-check("3/採用サイト", state()["ulike-airpro-s"]["atl"]["site"], "rakuten")
+check("3/通知済み価格", state()["ulike-airpro-s"]["alert"]["price"], 26892)
 
-print("== 4. 値上がり → 更新なし ==")
+print("== 3b. セール継続中は再通知しない ==")
+code, sent = run()
+check("3b/メール数", len(sent), 0)
+
+print("== 3c. さらに 500 円以上下がったら再通知 ==")
+stub(rakuten_payload(NAME_COUPON.format("26,380"), 49800), yahoo_payload(NAME_LIST, 48000))
+code, sent = run()
+check("3c/メール数", len(sent), 1)
+check("3c/通知済み価格", state()["ulike-airpro-s"]["alert"]["price"], 26380)
+
+print("== 4. 閾値より上に戻る → メールなし、通知状態リセット ==")
 stub(rakuten_payload(NAME_LIST, 49800), yahoo_payload(NAME_LIST, 48000))
 code, sent = run()
 check("4/メール数", len(sent), 0)
-check("4/ATL 据え置き", state()["ulike-airpro-s"]["atl"]["price"], 26892)
+check("4/ATL 据え置き", state()["ulike-airpro-s"]["atl"]["price"], 26380)
+check("4/通知状態リセット", state()["ulike-airpro-s"]["alert"].get("price"), None)
+
+print("== 4b. 再び閾値以下 → 同じ価格でも改めて 1 通 ==")
+stub(rakuten_payload(NAME_COUPON.format("26,892"), 49800), yahoo_payload(NAME_LIST, 48000))
+code, sent = run()
+check("4b/メール数", len(sent), 1)
 
 print("== 5. 誤検出フィルタ (ケース 3,000円 / 在庫なし 20,000円) ==")
 stub(rakuten_payload("Ulike AirPro S 専用 収納ケース", 3000),
@@ -123,7 +140,7 @@ stub(rakuten_payload("Ulike AirPro S 専用 収納ケース", 3000),
 before = len(history())
 code, sent = run()
 check("5/メール数", len(sent), 0)
-check("5/ATL 汚染なし", state()["ulike-airpro-s"]["atl"]["price"], 26892)
+check("5/ATL 汚染なし", state()["ulike-airpro-s"]["atl"]["price"], 26380)
 check("5/history 追記なし", len(history()), before)
 check("5/候補0件カウント", state()["ulike-airpro-s"]["health"]["no_result_streak"], 1)
 

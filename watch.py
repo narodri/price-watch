@@ -3,7 +3,8 @@
 Ulike AirPro S 価格ウォッチャー (楽天市場 / Yahoo!ショッピング)
 
 商品名に埋め込まれたクーポン価格を「実質価格」として拾い、
-**歴代最安値 (ATL) を更新したときだけ** Gmail で通知する。
+**通知ライン (alert_at_or_below) 以下になったときだけ** Gmail で通知する。
+歴代最安値 (ATL) は記録し続けるが、それ自体では通知しない。
 
     python watch.py                 # 通常実行
     python watch.py --dry-run       # メール送信も state/history 更新もしない
@@ -39,7 +40,7 @@ STATE_PATH = Path(os.environ.get("STATE_PATH", ROOT / "state.json"))
 HISTORY_PATH = Path(os.environ.get("HISTORY_PATH", ROOT / "docs" / "history.jsonl"))
 
 # --- 定数 (SPEC 5.2) -------------------------------------------------------
-MIN_DROP_YEN = 500      # この幅未満の更新はメールを送らない
+MIN_DROP_YEN = 500      # 通知済み価格からこの幅下がるまで再通知しない
 SANE_MIN = 18_000       # 実質価格の下限 (誤検出ガード)
 SANE_MAX = 80_000       # 実質価格の上限
 TIMEOUT_SEC = 20
@@ -57,6 +58,9 @@ TARGETS = [
         "label": "Ulike AirPro S",
         "keyword": "Ulike AirPro S 光美容器",
         "list_price": 49_800,
+        # 実勢価格は 29,880 円が常時、46%OFF 時の 26,880 円が底 (2026-06/07 に反復)。
+        # 定価 49,800 円は名目上のもので、割引なしの期間は観測できていない。
+        "alert_at_or_below": 27_000,
         "must_include": ["AirPro S", "AirProS", "Air Pro S"],
         "must_exclude": [
             "カートリッジ", "替え", "交換", "ケース", "収納", "カバー",
@@ -375,21 +379,25 @@ def esc(text: str) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def build_atl_mail(target: dict, offer: Offer, prev_atl: int,
-                   prev_at: str, now: datetime) -> tuple[str, str, str]:
-    """SPEC 3.1: 商品名全文と URL を必ず載せて誤検出に気づけるようにする。"""
-    drop = prev_atl - offer.price
+def build_alert_mail(target: dict, offer: Offer, atl: dict,
+                     notified: int | None, now: datetime) -> tuple[str, str, str]:
+    """買い時の通知。商品名全文と URL を必ず載せて誤検出に気づけるようにする。"""
+    threshold = target["alert_at_or_below"]
     stamp = now.strftime("%Y-%m-%d %H:%M")
-    subject = (f"【最安更新】{target['label']} {offer.price:,}円 "
-               f"({offer.site_label}) ▼{drop:,}円")
+    subject = (f"【{offer.price:,}円】{target['label']} が "
+               f"{threshold:,}円以下になりました ({offer.site_label})")
+
+    atl_line = f"{atl['price']:,}円 ({str(atl.get('ts', ''))[:10]})"
+    before = f"{notified:,}円" if notified is not None else "なし (今回が初回)"
 
     text = "\n".join([
-        f"{target['label']} が歴代最安値を更新しました。",
+        f"{target['label']} が通知ラインの {threshold:,}円以下になりました。",
         "",
         f"  実質価格 : {offer.price:,}円",
-        f"  定価     : {target['list_price']:,}円 (API 価格 {offer.list_price:,}円)",
-        f"  値引き幅 : -{target['list_price'] - offer.price:,}円 (定価比)",
-        f"  前回 ATL : {prev_atl:,}円 ({prev_at})  ▼{drop:,}円",
+        f"  通知ライン: {threshold:,}円",
+        f"  歴代最安  : {atl_line}",
+        f"  前回通知  : {before}",
+        f"  API 価格 : {offer.list_price:,}円 (名目定価 {target['list_price']:,}円)",
         f"  サイト   : {offer.site_label}",
         f"  ストア   : {offer.shop}",
         f"  取得時刻 : {stamp} JST",
@@ -399,25 +407,29 @@ def build_atl_mail(target: dict, offer: Offer, prev_atl: int,
         "",
         f"URL: {offer.url}",
         "",
+        "※ 商品名にクーポンの適用期間が書かれていることがあります。",
+        "   今すぐ買える価格とは限らないので、日付を必ず確認してください。",
         "※ 商品名が本体でない (ケース/カートリッジ等) 場合は誤検出です。",
         "   その場合は `python watch.py --reset-atl` で ATL を作り直してください。",
     ])
 
     html = f"""<html><body style="font-family:sans-serif;font-size:14px">
-<h2 style="margin:0 0 8px">{esc(target['label'])} 歴代最安更新</h2>
+<h2 style="margin:0 0 8px">{esc(target['label'])} が {threshold:,}円以下</h2>
 <p style="font-size:28px;margin:0 0 12px"><b>{offer.price:,}円</b>
 <span style="font-size:14px;color:#666">({esc(offer.site_label)})</span></p>
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">
-<tr><th align="left">定価</th><td>{target['list_price']:,}円</td></tr>
-<tr><th align="left">API 価格</th><td>{offer.list_price:,}円</td></tr>
-<tr><th align="left">前回 ATL</th><td>{prev_atl:,}円 ({esc(prev_at)}) ▼{drop:,}円</td></tr>
+<tr><th align="left">通知ライン</th><td>{threshold:,}円</td></tr>
+<tr><th align="left">歴代最安</th><td>{esc(atl_line)}</td></tr>
+<tr><th align="left">前回通知</th><td>{esc(before)}</td></tr>
+<tr><th align="left">API 価格</th><td>{offer.list_price:,}円 (名目定価 {target['list_price']:,}円)</td></tr>
 <tr><th align="left">ストア</th><td>{esc(offer.shop)}</td></tr>
 <tr><th align="left">取得時刻</th><td>{stamp} JST</td></tr>
 <tr><th align="left">商品名</th><td>{esc(offer.name)}</td></tr>
 </table>
 <p><a href="{esc(offer.url)}">{esc(offer.url)}</a></p>
-<p style="color:#a00">商品名が本体でなければ誤検出です。
-<code>python watch.py --reset-atl</code> で作り直してください。</p>
+<p style="color:#a00">商品名のクーポン適用期間を確認してください。今すぐ買える価格とは限りません。<br>
+本体でない商品が拾われていれば誤検出です
+(<code>python watch.py --reset-atl</code> で作り直し)。</p>
 </body></html>"""
     return subject, text, html
 
@@ -439,13 +451,13 @@ def build_baseline_mail(target: dict, offer: Offer, now: datetime) -> tuple[str,
         "",
         f"URL: {offer.url}",
         "",
-        f"次回以降、この価格を {MIN_DROP_YEN:,}円以上下回ったときに通知します。",
+        f"次回以降、{target['alert_at_or_below']:,}円以下になったときに通知します。",
     ])
     html = f"""<html><body style="font-family:sans-serif;font-size:14px">
 <h2 style="margin:0 0 8px">{esc(target['label'])} baseline 設定完了</h2>
 <p style="font-size:28px;margin:0 0 12px"><b>{offer.price:,}円</b>
 <span style="font-size:14px;color:#666">({esc(offer.site_label)})</span></p>
-<p>初回実行のため通知は送りません。次回以降 {MIN_DROP_YEN:,}円以上の更新で通知します。</p>
+<p>初回実行のため通知は送りません。次回以降 {target["alert_at_or_below"]:,}円以下で通知します。</p>
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">
 <tr><th align="left">定価</th><td>{target['list_price']:,}円</td></tr>
 <tr><th align="left">ストア</th><td>{esc(offer.shop)}</td></tr>
@@ -609,7 +621,7 @@ def run(args: argparse.Namespace) -> int:
             append_history(now, results)
 
         if atl is None:
-            # SPEC 2.2 コールドスタート: baseline のみ記録し値下げ通知はしない
+            # コールドスタート: baseline を記録するだけ (値下げ通知はしない)
             entry["atl"] = {
                 "price": best.price, "site": best.site,
                 "ts": now.isoformat(timespec="seconds"),
@@ -620,26 +632,41 @@ def run(args: argparse.Namespace) -> int:
             mails.append(build_baseline_mail(target, best, now))
             continue
 
-        if best.price >= atl["price"]:
-            print("  -> 更新なし")
+        # ATL は記録のみ。更新してもメールは出さない (通知は下の閾値が決める)
+        if best.price < atl["price"]:
+            print(f"  -> ATL 更新 {atl['price']:,}円 -> {best.price:,}円")
+            entry["atl"] = {
+                "price": best.price, "site": best.site,
+                "ts": now.isoformat(timespec="seconds"),
+                "name": best.name, "url": best.url, "shop": best.shop,
+                "prev_price": atl["price"],
+            }
+        else:
+            print("  -> ATL 更新なし")
+
+        # 通知は「閾値以下か」だけで決める。ATL の上下とは独立。
+        alert = entry.setdefault("alert", {})
+        notified = alert.get("price")
+        threshold = target["alert_at_or_below"]
+
+        if best.price > threshold:
+            # 閾値より上に戻った。次に下回ったらまた 1 通送る
+            if notified is not None:
+                print(f"  -> {threshold:,}円 超に戻ったため通知状態をリセット")
+            alert.pop("price", None)
+            alert.pop("ts", None)
             continue
 
-        drop = atl["price"] - best.price
-        prev_price, prev_at = atl["price"], str(atl.get("ts", ""))[:10]
-        entry["atl"] = {
-            "price": best.price, "site": best.site,
-            "ts": now.isoformat(timespec="seconds"),
-            "name": best.name, "url": best.url, "shop": best.shop,
-            "prev_price": prev_price,
-        }
-        if drop >= MIN_DROP_YEN:
-            print(f"  -> ATL 更新 {prev_price:,}円 -> {best.price:,}円 "
-                  f"(▼{drop:,}円) 通知します")
-            mails.append(build_atl_mail(target, best, prev_price, prev_at, now))
-        else:
-            # SPEC 2.3: 更新はするがメールは出さない
-            print(f"  -> ATL 更新 {prev_price:,}円 -> {best.price:,}円 "
-                  f"(▼{drop:,}円) < {MIN_DROP_YEN:,}円 のため通知は抑制")
+        if notified is not None and best.price > notified - MIN_DROP_YEN:
+            # セール期間中に毎回送らないための抑制
+            print(f"  -> {threshold:,}円以下だが通知済み {notified:,}円 から "
+                  f"{MIN_DROP_YEN:,}円以上下がっていないため抑制")
+            continue
+
+        print(f"  -> {threshold:,}円以下 ({best.price:,}円) につき通知します")
+        mails.append(build_alert_mail(target, best, entry["atl"], notified, now))
+        alert["price"] = best.price
+        alert["ts"] = now.isoformat(timespec="seconds")
 
     if args.dry_run:
         print("--- DRY RUN: メール送信も state/history 更新も行いません ---")
