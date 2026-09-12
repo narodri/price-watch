@@ -56,7 +56,9 @@ TARGETS = [
     {
         "key": "ulike-airpro-s",
         "label": "Ulike AirPro S",
-        "keyword": "Ulike AirPro S 光美容器",
+        # 楽天の新 API は「各検索語は半角 2 文字以上」を要求するので単独の "S" は置けない。
+        # "S" なしで検索し、must_include で AirPro S だけに絞る。
+        "keyword": "Ulike AirPro 光美容器",
         "list_price": 49_800,
         # 実勢価格は 29,880 円が常時、46%OFF 時の 26,880 円が底 (2026-06/07 に反復)。
         # 定価 49,800 円は名目上のもので、割引なしの期間は観測できていない。
