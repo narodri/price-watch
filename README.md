@@ -39,10 +39,15 @@ gh repo create price-watch --private --source=. --push
 
 | 키 | 발급처 | 비고 |
 |---|---|---|
-| `RAKUTEN_APP_ID` | https://webservice.rakuten.co.jp/ | 앱 등록 후 applicationId |
+| `RAKUTEN_APP_ID` | https://webservice.rakuten.co.jp/ | 앱 등록 후 Application ID |
+| `RAKUTEN_ACCESS_KEY` | (같은 화면) | Access Key. **2026년 신 API부터 필수** |
 | `YAHOO_CLIENT_ID` | https://e.developer.yahoo.co.jp/register | Client ID (앱ID) |
 
-둘 중 하나만 있어도 동작한다(있는 쪽만 조회).
+라쿠텐(ID+Key 세트)과 야후 중 하나만 있어도 동작한다(있는 쪽만 조회).
+
+라쿠텐은 2026-05-14에 API 기반이 `openapi.rakuten.co.jp`로 바뀌었고 Access Key가
+필수가 됐다. 앱 등록 시 Application type은 **API/Backend Service**, Allowed IP는
+GitHub Actions 러너 IP가 고정이 아니므로 `0.0.0.0/0`과 `::/0`을 넣는다.
 
 ### 3. Gmail 앱 패스워드
 
@@ -55,7 +60,8 @@ Settings → Secrets and variables → Actions → New repository secret:
 
 | 이름 | 필수 | 설명 |
 |---|---|---|
-| `RAKUTEN_APP_ID` | △ | 楽天 applicationId |
+| `RAKUTEN_APP_ID` | △ | 楽天 Application ID |
+| `RAKUTEN_ACCESS_KEY` | △ | 楽天 Access Key (APP_ID와 세트) |
 | `YAHOO_CLIENT_ID` | △ | Yahoo Client ID |
 | `GMAIL_USER` | O | 발신 주소 |
 | `GMAIL_APP_PASSWORD` | O | 앱 패스워드 16자리 |

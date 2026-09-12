@@ -20,6 +20,7 @@ WORK = Path(tempfile.mkdtemp(prefix="price-watch-e2e-"))
 os.environ["STATE_PATH"] = str(WORK / "state.json")
 os.environ["HISTORY_PATH"] = str(WORK / "docs" / "history.jsonl")
 os.environ["RAKUTEN_APP_ID"] = "dummy-rakuten"
+os.environ["RAKUTEN_ACCESS_KEY"] = "dummy-key"
 os.environ["YAHOO_CLIENT_ID"] = "dummy-yahoo"
 os.environ["GMAIL_USER"] = "x@example.com"
 os.environ["GMAIL_APP_PASSWORD"] = "dummy"

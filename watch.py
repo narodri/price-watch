@@ -171,7 +171,8 @@ def build_offer(site: str, name: str, api_price: int, url: str, shop: str) -> Of
 # ---------------------------------------------------------------------------
 def redact(text: str) -> str:
     """SPEC 4.7: 例外メッセージに API キー付き URL を出さない。"""
-    text = re.sub(r"(applicationId|appid|Client-?Id)=[^&\s\"']+", r"\1=***", text, flags=re.I)
+    text = re.sub(r"(applicationId|accessKey|appid|Client-?Id)=[^&\s\"']+", r"\1=***",
+                  text, flags=re.I)
     return re.sub(r"\?[^\s\"']*", "?<redacted>", text)
 
 
@@ -212,15 +213,19 @@ def http_get_json(url: str, headers: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 楽天市場 商品検索API v2
+# 楽天市場 商品検索API (2026 年新基盤)
+#
+# 2026-05-14 に旧基盤 app.rakuten.co.jp/services/api は停止した。
+# 新基盤は openapi.rakuten.co.jp で、applicationId に加えて accessKey が必須。
+# accessKey はヘッダーで送る (URL に載せるとログに漏れやすい)。
 # ---------------------------------------------------------------------------
 _last_rakuten_call = 0.0
 
 
-def search_rakuten(target: dict, app_id: str, hits: int = 30) -> SiteResult:
+def search_rakuten(target: dict, app_id: str, access_key: str, hits: int = 30) -> SiteResult:
     global _last_rakuten_call
     result = SiteResult(site="rakuten")
-    endpoint = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601"
+    endpoint = "https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701"
     params = {
         "applicationId": app_id,
         "keyword": target["keyword"],
@@ -234,7 +239,8 @@ def search_rakuten(target: dict, app_id: str, hits: int = 30) -> SiteResult:
     if wait > 0:
         time.sleep(wait)
     try:
-        data = http_get_json(f"{endpoint}?{urllib.parse.urlencode(params)}")
+        data = http_get_json(f"{endpoint}?{urllib.parse.urlencode(params)}",
+                             headers={"accessKey": access_key})
     except Exception as exc:  # noqa: BLE001
         result.ok = False
         result.error = redact(str(exc))
@@ -578,9 +584,15 @@ def log_run(target: dict, now: datetime, results: list[SiteResult],
 def run(args: argparse.Namespace) -> int:
     # 貼り付け時に紛れ込む改行や前後の空白で認証が落ちるのを防ぐ
     rakuten_id = (os.environ.get("RAKUTEN_APP_ID") or "").strip()
+    rakuten_key = (os.environ.get("RAKUTEN_ACCESS_KEY") or "").strip()
     yahoo_id = (os.environ.get("YAHOO_CLIENT_ID") or "").strip()
+    if rakuten_id and not rakuten_key:
+        print("[warn] RAKUTEN_ACCESS_KEY が未設定です。新 API は accessKey 必須なので"
+              "楽天はスキップします", file=sys.stderr)
+        rakuten_id = ""
     if not rakuten_id and not yahoo_id:
-        print("RAKUTEN_APP_ID か YAHOO_CLIENT_ID のどちらかが必要です", file=sys.stderr)
+        print("RAKUTEN_APP_ID+RAKUTEN_ACCESS_KEY か YAHOO_CLIENT_ID のどちらかが必要です",
+              file=sys.stderr)
         return 1
 
     now = datetime.now(JST)
@@ -591,7 +603,7 @@ def run(args: argparse.Namespace) -> int:
     for target in TARGETS:
         results: list[SiteResult] = []
         if rakuten_id:
-            results.append(search_rakuten(target, rakuten_id))
+            results.append(search_rakuten(target, rakuten_id, rakuten_key))
         if yahoo_id:
             results.append(search_yahoo(target, yahoo_id))
 
@@ -777,9 +789,9 @@ def selftest() -> int:
           build_offer("rakuten", "Ulike AirPro S 3台セット", 120000, "u", "s"), None)
 
     # 例外メッセージの秘匿
-    leaked = redact(
-        "HTTP Error 429: https://app.rakuten.co.jp/x?applicationId=SECRET123&keyword=a")
-    if "SECRET123" in leaked:
+    leaked = redact("HTTP Error 429: https://openapi.rakuten.co.jp/x"
+                    "?applicationId=SECRET123&accessKey=SECRET456&keyword=a")
+    if "SECRET123" in leaked or "SECRET456" in leaked:
         failures.append(f"API キーが漏れている: {leaked}")
 
     # HTTP エラーは本文まで拾う (原因切り分けのため)
