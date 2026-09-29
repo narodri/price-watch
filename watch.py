@@ -12,6 +12,7 @@ Ulike AirPro S 価格ウォッチャー (楽天市場 / Yahoo!ショッピング
     python watch.py --reset-atl     # ATL を削除 (次回実行で再設定)
     python watch.py --set-atl 29800 # ATL を手動指定
     python watch.py --test-mail     # 疎通確認メールのみ
+    python watch.py --dry-run --force-weekly   # 週次ダイジェストの中身を確認
     python watch.py --selftest      # ネットワーク不要の内部テスト
 """
 
@@ -50,6 +51,7 @@ RAKUTEN_INTERVAL_SEC = 1.0   # 楽天 API は 1 秒 1 リクエスト
 NO_RESULT_STREAK_LIMIT = 3        # 3 回連続で候補 0 件なら警告
 NO_COUPON_DAYS_LIMIT = 7          # 7 日連続でクーポン解析 0 件なら警告
 ALERT_COOLDOWN_DAYS = 7           # 警告メールのクールダウン
+WEEKLY_REPORT_DAYS = 7            # 週次ダイジェストの間隔
 
 # --- 監視対象 (SPEC 1.1: 単一だが構造は配列で保持) -------------------------
 TARGETS = [
@@ -422,7 +424,7 @@ def build_alert_mail(target: dict, offer: Offer, atl: dict,
         "   その場合は `python watch.py --reset-atl` で ATL を作り直してください。",
     ])
 
-    html = f"""<html><body style="font-family:sans-serif;font-size:14px">
+    html = f"""<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;font-size:14px">
 <h2 style="margin:0 0 8px">{esc(target['label'])} が {threshold:,}円以下</h2>
 <p style="font-size:28px;margin:0 0 12px"><b>{offer.price:,}円</b>
 <span style="font-size:14px;color:#666">({esc(offer.site_label)})</span></p>
@@ -462,7 +464,7 @@ def build_baseline_mail(target: dict, offer: Offer, now: datetime) -> tuple[str,
         "",
         f"次回以降、{target['alert_at_or_below']:,}円以下になったときに通知します。",
     ])
-    html = f"""<html><body style="font-family:sans-serif;font-size:14px">
+    html = f"""<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;font-size:14px">
 <h2 style="margin:0 0 8px">{esc(target['label'])} baseline 設定完了</h2>
 <p style="font-size:28px;margin:0 0 12px"><b>{offer.price:,}円</b>
 <span style="font-size:14px;color:#666">({esc(offer.site_label)})</span></p>
@@ -478,11 +480,118 @@ def build_baseline_mail(target: dict, offer: Offer, now: datetime) -> tuple[str,
     return subject, text, html
 
 
+def load_history(days: int, now: datetime) -> list[dict]:
+    """直近 days 日ぶんの履歴を古い順で返す。"""
+    if not HISTORY_PATH.exists():
+        return []
+    cutoff = now - timedelta(days=days)
+    rows = []
+    for line in HISTORY_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            ts = datetime.fromisoformat(row["ts"])
+        except (json.JSONDecodeError, KeyError, ValueError):
+            continue
+        if ts >= cutoff:
+            row["_ts"] = ts
+            rows.append(row)
+    return sorted(rows, key=lambda r: r["_ts"])
+
+
+def daily_low(rows: list[dict]) -> list[tuple[str, int, dict[str, int]]]:
+    """日付ごとに (日付, 全体最安, サイト別最安) を古い順で返す。"""
+    by_day: dict[str, dict[str, int]] = {}
+    for row in rows:
+        day = row["_ts"].strftime("%m/%d")
+        per_site = by_day.setdefault(day, {})
+        if row["price"] < per_site.get(row["site"], 10**9):
+            per_site[row["site"]] = row["price"]
+    return [(day, min(sites.values()), sites) for day, sites in sorted(by_day.items())]
+
+
+def build_weekly_mail(target: dict, rows: list[dict], atl: dict | None,
+                      now: datetime) -> tuple[str, str, str]:
+    """週次ダイジェスト。日ごとの最安をバーで並べる。"""
+    threshold = target["alert_at_or_below"]
+    days = daily_low(rows)
+    lows = [low for _, low, _ in days]
+    week_min, week_max = min(lows), max(lows)
+    latest_day, latest_low, latest_sites = days[-1]
+    span = max(week_max - week_min, 1)
+
+    subject = (f"【週次】{target['label']} 今週の最安 {week_min:,}円 "
+               f"/ 現在 {latest_low:,}円")
+
+    # --- テキスト版: 等幅前提のバー ---
+    lines = [f"{target['label']} 直近 {len(days)} 日の価格推移", ""]
+    for day, low, sites in days:
+        filled = 4 + round(20 * (low - week_min) / span)
+        mark = " *" if low <= threshold else ""
+        detail = " / ".join(f"{SITE_LABEL.get(s, s)} {p:,}"
+                            for s, p in sorted(sites.items()))
+        lines.append(f"  {day}  {'#' * filled:<24} {low:>7,}円{mark}   ({detail})")
+    lines += [
+        "",
+        f"  今週の最安 : {week_min:,}円",
+        f"  今週の最高 : {week_max:,}円",
+        f"  現在       : {latest_low:,}円 ({latest_day})",
+        f"  通知ライン : {threshold:,}円" + ("  ← 到達済み" if latest_low <= threshold else ""),
+    ]
+    if atl:
+        lines.append(f"  歴代最安   : {atl['price']:,}円 ({str(atl.get('ts', ''))[:10]})")
+    lines += [
+        "",
+        "* 印は通知ライン以下の日です。",
+        "",
+        "ダッシュボード: https://narodri.github.io/price-watch/",
+    ]
+
+    # --- HTML 版: テーブルの幅でバーを描く (画像を使わないので大抵の環境で出る) ---
+    bars = []
+    for day, low, sites in days:
+        pct = 25 + round(75 * (low - week_min) / span)
+        color = "#16a34a" if low <= threshold else "#9ca3af"
+        detail = " / ".join(f"{esc(SITE_LABEL.get(s, s))} {p:,}"
+                            for s, p in sorted(sites.items()))
+        bars.append(
+            f'<tr><td style="padding:3px 8px 3px 0;white-space:nowrap;color:#666">{day}</td>'
+            f'<td style="width:100%"><div style="background:{color};height:14px;'
+            f'width:{pct}%;border-radius:3px"></div></td>'
+            f'<td style="padding:3px 0 3px 8px;white-space:nowrap;text-align:right">'
+            f'<b>{low:,}円</b></td>'
+            f'<td style="padding:3px 0 3px 10px;white-space:nowrap;color:#888;'
+            f'font-size:12px">{detail}</td></tr>')
+
+    atl_row = (f'<tr><th align="left">歴代最安</th><td>{atl["price"]:,}円 '
+               f'({esc(str(atl.get("ts", ""))[:10])})</td></tr>') if atl else ""
+
+    html = f"""<html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;font-size:14px">
+<h2 style="margin:0 0 4px">{esc(target['label'])} 週次レポート</h2>
+<p style="margin:0 0 14px;color:#666">直近 {len(days)} 日 / {now.strftime('%Y-%m-%d')} JST</p>
+<table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;
+ font-variant-numeric:tabular-nums">{''.join(bars)}</table>
+<p style="color:#888;font-size:12px;margin:6px 0 16px">
+緑は通知ライン {threshold:,}円 以下の日</p>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse">
+<tr><th align="left">今週の最安</th><td><b>{week_min:,}円</b></td></tr>
+<tr><th align="left">今週の最高</th><td>{week_max:,}円</td></tr>
+<tr><th align="left">現在</th><td>{latest_low:,}円 ({esc(latest_day)})</td></tr>
+<tr><th align="left">通知ライン</th><td>{threshold:,}円</td></tr>
+{atl_row}
+</table>
+<p><a href="https://narodri.github.io/price-watch/">ダッシュボードを開く</a></p>
+</body></html>"""
+    return subject, "\n".join(lines), html
+
+
 def build_health_mail(title: str, detail: str, now: datetime) -> tuple[str, str, str]:
     stamp = now.strftime("%Y-%m-%d %H:%M")
     subject = f"【要点検】価格ウォッチャー: {title}"
     text = f"{title}\n\n{detail}\n\n検知時刻: {stamp} JST\n"
-    html = (f"<html><body style='font-family:sans-serif;font-size:14px'>"
+    html = (f"<html><head><meta charset='utf-8'></head>"
+            f"<body style='font-family:sans-serif;font-size:14px'>"
             f"<h2>{esc(title)}</h2>"
             f"<pre style='white-space:pre-wrap'>{esc(detail)}</pre>"
             f"<p>検知時刻: {stamp} JST</p></body></html>")
@@ -643,6 +752,8 @@ def run(args: argparse.Namespace) -> int:
                 "name": best.name, "url": best.url, "shop": best.shop,
             }
             entry["baseline_at"] = now.isoformat(timespec="seconds")
+            # 初回は baseline メールだけ。週次ダイジェストは 1 週間後から
+            entry.setdefault("weekly", {})["last_sent"] = now.isoformat(timespec="seconds")
             print(f"  -> baseline を {best.price:,}円 で設定しました (値下げ通知なし)")
             mails.append(build_baseline_mail(target, best, now))
             continue
@@ -682,6 +793,23 @@ def run(args: argparse.Namespace) -> int:
         mails.append(build_alert_mail(target, best, entry["atl"], notified, now))
         alert["price"] = best.price
         alert["ts"] = now.isoformat(timespec="seconds")
+
+    # --- 週次ダイジェスト (価格の上下に関係なく 7 日ごとに 1 通) ---
+    for target in TARGETS:
+        entry = state.setdefault(target["key"], {})
+        weekly = entry.setdefault("weekly", {})
+        last_sent = parse_ts(weekly.get("last_sent"))
+        due = last_sent is None or (now - last_sent) >= timedelta(days=WEEKLY_REPORT_DAYS)
+        if not (due or args.force_weekly):
+            continue
+        rows = load_history(WEEKLY_REPORT_DAYS + 1, now)
+        if not rows:
+            print("  -> 週次レポート: 履歴がないのでスキップ")
+            continue
+        print(f"  -> 週次レポートを送ります ({len(rows)} 件)")
+        mails.append(build_weekly_mail(target, rows, entry.get("atl"), now))
+        weekly["last_sent"] = now.isoformat(timespec="seconds")
+        dirty = True
 
     if args.dry_run:
         print("--- DRY RUN: メール送信も state/history 更新も行いません ---")
@@ -835,6 +963,8 @@ def main() -> int:
     parser.add_argument("--reset-atl", action="store_true", help="ATL を削除")
     parser.add_argument("--set-atl", type=int, metavar="YEN", help="ATL を手動指定")
     parser.add_argument("--test-mail", action="store_true", help="疎通確認メールのみ送信")
+    parser.add_argument("--force-weekly", action="store_true",
+                        help="週次ダイジェストを間隔に関係なく生成する (--dry-run と併用)")
     parser.add_argument("--selftest", action="store_true", help="ネットワーク不要の内部テスト")
     args = parser.parse_args()
 

@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 from argparse import Namespace
+from datetime import timedelta
 from pathlib import Path
 
 WORK = Path(tempfile.mkdtemp(prefix="price-watch-e2e-"))
@@ -65,9 +66,9 @@ def stub(rakuten=None, yahoo=None, fail_rakuten=False, fail_yahoo=False) -> None
     watch.http_get_json = _get
 
 
-def run(dry: bool = False) -> tuple[int, list[str]]:
+def run(dry: bool = False, weekly: bool = False) -> tuple[int, list[str]]:
     SENT.clear()
-    return watch.run(Namespace(dry_run=dry)), list(SENT)
+    return watch.run(Namespace(dry_run=dry, force_weekly=weekly)), list(SENT)
 
 
 def state() -> dict:
@@ -176,6 +177,20 @@ check("9/警告メール", len(sent), 1)
 check("9/件名", "検索結果 0 件" in sent[0], True)
 code, sent = run()
 check("9/クールダウン", len(sent), 0)
+
+print("== 9b. 週次ダイジェストは 7 日ごとに 1 通 ==")
+stub(rakuten_payload(NAME_LIST, 49800), yahoo_payload(NAME_LIST, 48000))
+snapshot = json.loads(STATE.read_text(encoding="utf-8"))
+eight_days_ago = watch.datetime.now(watch.JST) - timedelta(days=8)
+snapshot["ulike-airpro-s"]["weekly"] = {
+    "last_sent": eight_days_ago.isoformat(timespec="seconds")}
+STATE.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+code, sent = run()
+check("9b/7日経過で送る", sum("週次" in s for s in sent), 1)
+code, sent = run()
+check("9b/直後は送らない", sum("週次" in s for s in sent), 0)
+code, sent = run(weekly=True)
+check("9b/--force-weekly で強制送信", sum("週次" in s for s in sent), 1)
 
 print("== 10. ATL 手動操作 ==")
 watch.set_atl(29800)
