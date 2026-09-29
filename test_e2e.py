@@ -104,12 +104,12 @@ code, sent = run()
 check("2/メール数", len(sent), 0)
 check("2/ATL", state()["ulike-airpro-s"]["atl"]["price"], 47700)
 
-print("== 3. 閾値 (27,000円) 以下 → 通知 ==")
+print("== 3. 閾値 (30,000円) 以下 → 通知 ==")
 stub(rakuten_payload(NAME_COUPON.format("26,892"), 49800), yahoo_payload(NAME_LIST, 48000))
 code, sent = run()
 check("3/メール数", len(sent), 1)
 check("3/件名", sent[0],
-      "【26,892円】Ulike AirPro S が 27,000円以下になりました (楽天)")
+      "【26,892円】Ulike AirPro S が 30,000円以下になりました (楽天)")
 check("3/ATL", state()["ulike-airpro-s"]["atl"]["price"], 26892)
 check("3/通知済み価格", state()["ulike-airpro-s"]["alert"]["price"], 26892)
 
