@@ -2,7 +2,7 @@
   "ulike-airpro-s": {
     "health": {
       "no_result_streak": 0,
-      "last_coupon_ok_ts": "2026-10-15T17:53:53+09:00"
+      "last_coupon_ok_ts": "2026-10-16T01:23:13+09:00"
     },
     "atl": {
       "price": 26880,
@@ -13,10 +13,7 @@
       "shop": ""
     },
     "baseline_at": "2026-09-09T01:03:33+09:00",
-    "alert": {
-      "price": 29880,
-      "ts": "2026-10-14T18:18:37+09:00"
-    },
+    "alert": {},
     "weekly": {
       "last_sent": "2026-10-14T03:55:28+09:00"
     }
